@@ -17,5 +17,4 @@ shared_library('gstkrisp',
   cpp_args: cpp_feature_args,
   install: true,
   install_dir: get_option('libdir') / 'gstreamer-1.0',
-  name_prefix: '',
 )

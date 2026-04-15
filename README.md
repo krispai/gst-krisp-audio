@@ -139,8 +139,8 @@ The built plugin is written to `build/meson/src/`:
 
 | Platform | File |
 |---|---|
-| macOS | `gstkrisp.dylib` |
-| Linux | `gstkrisp.so` |
+| macOS | `libgstkrisp.dylib` |
+| Linux | `libgstkrisp.so` |
 | Windows | `gstkrisp.dll` |
 
 ### Using Meson directly
