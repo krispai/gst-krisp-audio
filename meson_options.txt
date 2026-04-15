@@ -1,0 +1,14 @@
+option('krisp_sdk_dir',
+    type: 'string',
+    value: '',
+    description: 'Path to the Krisp Audio SDK package directory (must contain include/ and lib/)')
+
+option('nc',
+    type: 'feature',
+    value: 'enabled',
+    description: 'Build the krispnc noise-cancellation element')
+
+option('ar',
+    type: 'feature',
+    value: 'auto',
+    description: 'Build the krispaccent accent-reduction element (auto = enable if SDK header present)')
