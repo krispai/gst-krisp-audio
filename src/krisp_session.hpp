@@ -16,6 +16,8 @@
 #include <krisp-audio-api-definitions.hpp>
 #include <krisp-audio-sdk.hpp>
 
+#include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -45,13 +47,14 @@ public:
     /// @param logLevel    Minimum SDK log level passed to globalInit (default: Trace,
     ///                    actual output is filtered by the GStreamer debug category).
     static void acquire(
-        const std::string&                licenseKey,
-        Krisp::AudioSdk::LogCallback      logCallback = nullptr,
-        Krisp::AudioSdk::LogLevel         logLevel    = Krisp::AudioSdk::LogLevel::Trace)
+        const std::string& licenseKey,
+        Krisp::AudioSdk::LogCallback logCallback = nullptr,
+        Krisp::AudioSdk::LogLevel logLevel = Krisp::AudioSdk::LogLevel::Trace)
     {
         std::lock_guard<std::mutex> lk(_mutex);
-        if (_refcount++ > 0)
+        if (_refcount > 0)
         {
+            ++_refcount;
             return; // SDK already initialised by another element instance
         }
 
@@ -60,6 +63,9 @@ public:
             _lastError.clear();
         }
 
+        // Increment only after globalInit succeeds. If globalInit throws, _refcount
+        // stays at 0 so the next acquire() retries initialization rather than
+        // treating the SDK as already up.
         Krisp::AudioSdk::globalInit(
             L"",
             licenseKey,
@@ -73,11 +79,17 @@ public:
             },
             logCallback,
             logLevel);
+        ++_refcount;
     }
 
     static void release()
     {
         std::lock_guard<std::mutex> lk(_mutex);
+        assert(_refcount > 0 && "release() called without a matching acquire()");
+        if (_refcount == 0)
+        {
+            return; // prevent underflow in release builds
+        }
         if (--_refcount == 0)
         {
             Krisp::AudioSdk::globalDestroy();
@@ -150,6 +162,80 @@ inline Krisp::AudioSdk::FrameDuration toKrispFrameDuration(int ms)
 }
 
 // ---------------------------------------------------------------------------
+// UTF-8 → wide string (no locale dependency, no <filesystem>)
+//
+// Handles the full Unicode range.  On Linux/macOS wchar_t is 32-bit (UTF-32);
+// on Windows it is 16-bit (UTF-16), so surrogate pairs are emitted there.
+// Throws std::invalid_argument if the input is not valid UTF-8.
+// ---------------------------------------------------------------------------
+inline std::wstring utf8ToWide(const std::string& utf8)
+{
+    std::wstring result;
+    result.reserve(utf8.size());
+
+    for (std::size_t i = 0; i < utf8.size();)
+    {
+        uint32_t cp = 0;
+        const auto c = static_cast<unsigned char>(utf8[i]);
+        int extra = 0;
+
+        if (c < 0x80)
+        {
+            cp = c;
+            extra = 0;
+        }
+        else if ((c & 0xE0) == 0xC0)
+        {
+            cp = c & 0x1Fu;
+            extra = 1;
+        }
+        else if ((c & 0xF0) == 0xE0)
+        {
+            cp = c & 0x0Fu;
+            extra = 2;
+        }
+        else if ((c & 0xF8) == 0xF0)
+        {
+            cp = c & 0x07u;
+            extra = 3;
+        }
+        else
+        {
+            throw std::invalid_argument("Invalid UTF-8 sequence in model path");
+        }
+
+        ++i;
+        for (int j = 0; j < extra; ++j, ++i)
+        {
+            if (i >= utf8.size() || (static_cast<unsigned char>(utf8[i]) & 0xC0) != 0x80)
+            {
+                throw std::invalid_argument("Invalid UTF-8 sequence in model path");
+            }
+            cp = (cp << 6) | (static_cast<unsigned char>(utf8[i]) & 0x3Fu);
+        }
+
+        if constexpr (sizeof(wchar_t) == 2) // UTF-16 (Windows)
+        {
+            if (cp < 0x10000u)
+            {
+                result.push_back(static_cast<wchar_t>(cp));
+            }
+            else
+            {
+                cp -= 0x10000u;
+                result.push_back(static_cast<wchar_t>(0xD800u | (cp >> 10)));
+                result.push_back(static_cast<wchar_t>(0xDC00u | (cp & 0x3FFu)));
+            }
+        }
+        else // UTF-32 (Linux / macOS)
+        {
+            result.push_back(static_cast<wchar_t>(cp));
+        }
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // Base interface
 // ---------------------------------------------------------------------------
 class IKrispSession
@@ -178,6 +264,10 @@ class KrispSession final : public IKrispSession
 public:
     KrispSession(std::shared_ptr<SessionT> session, int frameSz) : _session(std::move(session)), _frameSz(frameSz)
     {
+        if (frameSz <= 0)
+        {
+            throw std::invalid_argument("frameSz must be > 0, got " + std::to_string(frameSz));
+        }
         _temp.resize(frameSz);
     }
 

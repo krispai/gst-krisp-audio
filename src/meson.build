@@ -1,4 +1,4 @@
-plugin_sources   = ['gstkrisp.cpp']
+plugin_sources   = ['gstkrisp.cpp', 'gstkrisp_common.cpp']
 cpp_feature_args = ['-DGST_USE_UNSTABLE_API']
 
 if build_nc

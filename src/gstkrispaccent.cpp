@@ -5,53 +5,15 @@
 /// Wraps Krisp::AudioSdk::Ar for in-pipeline accent reduction.
 ///
 #include "gstkrispaccent.hpp"
-#include "krisp_session.hpp"
+#include "gstkrisp_common.hpp"
 
 #include <krisp-audio-sdk-ar.hpp>
 
 #include <gst/audio/audio.h>
 #include <gst/audio/gstaudiofilter.h>
 
-#include <memory>
-#include <string>
-
-GST_DEBUG_CATEGORY_EXTERN(krisp_sdk_debug);
-
 // ---------------------------------------------------------------------------
-// Element properties
-// ---------------------------------------------------------------------------
-enum
-{
-    PROP_0,
-    PROP_MODEL,
-    PROP_LICENSE_KEY,
-    PROP_NOISE_SUPPRESSION_LEVEL,
-    PROP_FRAME_DURATION,
-};
-
-// ---------------------------------------------------------------------------
-// Private instance data
-// ---------------------------------------------------------------------------
-struct _GstKrispAccentPrivate
-{
-    gchar* modelPath = nullptr;
-    gchar* licenseKey = nullptr;
-    gfloat nsLevel = 100.0f;
-    gint frameDurationMs = 10;
-    bool globalInitAcquired = false;
-    bool licensingChecked = false; // checked async licensing error on first frame
-
-    std::unique_ptr<KrispGst::IKrispSession> session;
-};
-
-struct _GstKrispAccent
-{
-    GstAudioFilter parent;
-    _GstKrispAccentPrivate priv;
-};
-
-// ---------------------------------------------------------------------------
-// Pad caps templates
+// Pad caps template: all Krisp-supported rates, S16LE and F32LE, mono only
 // ---------------------------------------------------------------------------
 static GstStaticPadTemplate sSinkTemplate = GST_STATIC_PAD_TEMPLATE(
     "sink",
@@ -74,6 +36,13 @@ static GstStaticPadTemplate sSrcTemplate = GST_STATIC_PAD_TEMPLATE(
         "rate = (int) { 8000, 16000, 24000, 32000, 44100, 48000, 88200, 96000 }, "
         "channels = (int) 1, "
         "layout = (string) interleaved"));
+
+// GObject boilerplate — embed shared private data in the instance struct
+struct _GstKrispAccent
+{
+    GstAudioFilter parent;
+    KrispElementPrivate priv;
+};
 
 G_DEFINE_TYPE(GstKrispAccent, gst_krisp_accent, GST_TYPE_AUDIO_FILTER)
 
@@ -100,49 +69,7 @@ static void gst_krisp_accent_class_init(GstKrispAccentClass* klass)
     gobjectClass->set_property = gst_krisp_accent_set_property;
     gobjectClass->get_property = gst_krisp_accent_get_property;
 
-    g_object_class_install_property(
-        gobjectClass,
-        PROP_MODEL,
-        g_param_spec_string(
-            "model",
-            "Model",
-            "Path to the Krisp AR .kef model file",
-            nullptr,
-            (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-    g_object_class_install_property(
-        gobjectClass,
-        PROP_LICENSE_KEY,
-        g_param_spec_string(
-            "license-key",
-            "License Key",
-            "Krisp SDK license key (required for the server SDK)",
-            nullptr,
-            (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-    g_object_class_install_property(
-        gobjectClass,
-        PROP_NOISE_SUPPRESSION_LEVEL,
-        g_param_spec_float(
-            "noise-suppression-level",
-            "Noise Suppression Level",
-            "Noise suppression intensity [0.0 = off, 100.0 = full]",
-            0.0f,
-            100.0f,
-            100.0f,
-            (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
-    g_object_class_install_property(
-        gobjectClass,
-        PROP_FRAME_DURATION,
-        g_param_spec_int(
-            "frame-duration",
-            "Frame Duration (ms)",
-            "Internal processing frame duration in ms (10, 15, 20, 30, 32)",
-            10,
-            32,
-            10,
-            (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+    krispElementInstallProperties(gobjectClass, "Path to the Krisp AR .kef model file");
 
     gst_element_class_set_static_metadata(
         elementClass,
@@ -164,7 +91,7 @@ static void gst_krisp_accent_class_init(GstKrispAccentClass* klass)
 // ---------------------------------------------------------------------------
 static void gst_krisp_accent_init(GstKrispAccent* self)
 {
-    new (&self->priv) _GstKrispAccentPrivate();
+    new (&self->priv) KrispElementPrivate();
 }
 
 // ---------------------------------------------------------------------------
@@ -173,14 +100,8 @@ static void gst_krisp_accent_init(GstKrispAccent* self)
 static void gst_krisp_accent_finalize(GObject* obj)
 {
     auto* self = GST_KRISP_ACCENT(obj);
-    self->priv.session.reset();
-    g_free(self->priv.modelPath);
-    g_free(self->priv.licenseKey);
-    if (self->priv.globalInitAcquired)
-    {
-        KrispGst::GlobalInit::release();
-    }
-    self->priv.~_GstKrispAccentPrivate();
+    krispElementFinalizePriv(&self->priv);
+    self->priv.~KrispElementPrivate();
     G_OBJECT_CLASS(gst_krisp_accent_parent_class)->finalize(obj);
 }
 
@@ -189,176 +110,57 @@ static void gst_krisp_accent_finalize(GObject* obj)
 // ---------------------------------------------------------------------------
 static void gst_krisp_accent_set_property(GObject* obj, guint id, const GValue* v, GParamSpec* ps)
 {
-    auto* self = GST_KRISP_ACCENT(obj);
-    switch (id)
+    if (!krispElementSetProperty(&GST_KRISP_ACCENT(obj)->priv, id, v))
     {
-        case PROP_MODEL:
-            g_free(self->priv.modelPath);
-            self->priv.modelPath = g_value_dup_string(v);
-            break;
-        case PROP_LICENSE_KEY:
-            g_free(self->priv.licenseKey);
-            self->priv.licenseKey = g_value_dup_string(v);
-            break;
-        case PROP_NOISE_SUPPRESSION_LEVEL:
-            self->priv.nsLevel = g_value_get_float(v);
-            break;
-        case PROP_FRAME_DURATION:
-            self->priv.frameDurationMs = g_value_get_int(v);
-            break;
-        default:
-            G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, id, ps);
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, id, ps);
     }
 }
 
 static void gst_krisp_accent_get_property(GObject* obj, guint id, GValue* v, GParamSpec* ps)
 {
-    auto* self = GST_KRISP_ACCENT(obj);
-    switch (id)
+    if (!krispElementGetProperty(&GST_KRISP_ACCENT(obj)->priv, id, v))
     {
-        case PROP_MODEL:
-            g_value_set_string(v, self->priv.modelPath);
-            break;
-        case PROP_LICENSE_KEY:
-            g_value_set_string(v, self->priv.licenseKey);
-            break;
-        case PROP_NOISE_SUPPRESSION_LEVEL:
-            g_value_set_float(v, self->priv.nsLevel);
-            break;
-        case PROP_FRAME_DURATION:
-            g_value_set_int(v, self->priv.frameDurationMs);
-            break;
-        default:
-            G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, id, ps);
+        G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, id, ps);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Setup — called when caps are negotiated
+// Setup — shared preamble + AR-specific session factory
 // ---------------------------------------------------------------------------
 static gboolean gst_krisp_accent_setup(GstAudioFilter* filter, const GstAudioInfo* info)
 {
-    auto* self = GST_KRISP_ACCENT(filter);
-
-    if (!self->priv.modelPath || self->priv.modelPath[0] == '\0')
-    {
-        GST_ELEMENT_ERROR(
-            self, RESOURCE, NOT_FOUND, ("'model' property must be set before the pipeline starts"), (nullptr));
-        return FALSE;
-    }
-
-    self->priv.session.reset();
-    self->priv.licensingChecked = false;
-
-    const int rate = GST_AUDIO_INFO_RATE(info);
-    const int fd = self->priv.frameDurationMs;
-    const int frameSz = rate * fd / 1000;
-
-    std::string pathStr(self->priv.modelPath);
-    std::wstring modelWpath(pathStr.begin(), pathStr.end());
-
-    Krisp::AudioSdk::ModelInfo modelInfo;
-    modelInfo.path = modelWpath;
-
-    const GstAudioFormat fmt = GST_AUDIO_INFO_FORMAT(info);
-
-    try
-    {
-        if (!self->priv.globalInitAcquired)
+    return krispElementSetup(
+        "AR",
+        filter,
+        &GST_KRISP_ACCENT(filter)->priv,
+        info,
+        [](GstAudioFormat fmt, int rate, int fd, int frameSz, const std::string& modelPath)
+            -> std::unique_ptr<KrispGst::IKrispSession>
         {
-            KrispGst::GlobalInit::acquire(
-                self->priv.licenseKey ? self->priv.licenseKey : "",
-                [](const std::string& msg, Krisp::AudioSdk::LogLevel lvl)
-                {
-                    static const GstDebugLevel levelMap[] = {
-                        GST_LEVEL_MEMDUMP, // Trace
-                        GST_LEVEL_DEBUG,   // Debug
-                        GST_LEVEL_INFO,    // Info
-                        GST_LEVEL_WARNING, // Warn
-                        GST_LEVEL_ERROR,   // Err
-                        GST_LEVEL_ERROR,   // Critical
-                    };
-                    const auto idx = static_cast<int>(lvl);
-                    const GstDebugLevel gstLvl = (idx >= 0 && idx < 6) ? levelMap[idx] : GST_LEVEL_DEBUG;
-                    GST_CAT_LEVEL_LOG(krisp_sdk_debug, gstLvl, nullptr, "%s", msg.c_str());
-                });
-            self->priv.globalInitAcquired = true;
-        }
+            std::wstring modelWpath = KrispGst::utf8ToWide(modelPath);
+            Krisp::AudioSdk::ModelInfo mi;
+            mi.path = modelWpath;
 
-        if (fmt == GST_AUDIO_FORMAT_F32LE)
-        {
             Krisp::AudioSdk::ArSessionConfig cfg{};
             cfg.inputSampleRate = KrispGst::toKrispRate(rate);
             cfg.inputFrameDuration = KrispGst::toKrispFrameDuration(fd);
             cfg.outputSampleRate = KrispGst::toKrispRate(rate);
-            cfg.modelInfo = &modelInfo;
+            cfg.modelInfo = &mi;
 
-            auto session = Krisp::AudioSdk::Ar<float>::create(cfg);
-            self->priv.session = std::make_unique<KrispGst::KrispSession<Krisp::AudioSdk::Ar<float>, float>>(
-                std::move(session), frameSz);
-        }
-        else
-        { // S16LE
-            Krisp::AudioSdk::ArSessionConfig cfg{};
-            cfg.inputSampleRate = KrispGst::toKrispRate(rate);
-            cfg.inputFrameDuration = KrispGst::toKrispFrameDuration(fd);
-            cfg.outputSampleRate = KrispGst::toKrispRate(rate);
-            cfg.modelInfo = &modelInfo;
-
-            auto session = Krisp::AudioSdk::Ar<int16_t>::create(cfg);
-            self->priv.session = std::make_unique<KrispGst::KrispSession<Krisp::AudioSdk::Ar<int16_t>, int16_t>>(
-                std::move(session), frameSz);
-        }
-    }
-    catch (const std::exception& e)
-    {
-        GST_ELEMENT_ERROR(self, LIBRARY, INIT, ("Failed to create Krisp AR session: %s", e.what()), (nullptr));
-        return FALSE;
-    }
-
-    GST_INFO_OBJECT(self, "Krisp AR session created: rate=%d fd=%dms fmt=%s", rate, fd, GST_AUDIO_INFO_NAME(info));
-    return TRUE;
+            if (fmt == GST_AUDIO_FORMAT_F32LE)
+            {
+                return std::make_unique<KrispGst::KrispSession<Krisp::AudioSdk::Ar<float>, float>>(
+                    Krisp::AudioSdk::Ar<float>::create(cfg), frameSz);
+            }
+            return std::make_unique<KrispGst::KrispSession<Krisp::AudioSdk::Ar<int16_t>, int16_t>>(
+                Krisp::AudioSdk::Ar<int16_t>::create(cfg), frameSz);
+        });
 }
 
 // ---------------------------------------------------------------------------
-// Filter — called per GstBuffer
+// Filter
 // ---------------------------------------------------------------------------
 static GstFlowReturn gst_krisp_accent_filter(GstBaseTransform* bt, GstBuffer* buf)
 {
-    auto* self = GST_KRISP_ACCENT(bt);
-
-    if (!self->priv.session)
-    {
-        GST_ELEMENT_ERROR(self, STREAM, FAILED, ("No Krisp AR session"), (nullptr));
-        return GST_FLOW_ERROR;
-    }
-
-    // Check for a licensing error posted asynchronously by the SDK callback.
-    // We only need to check once. A licensing error is non-fatal — the SDK
-    // continues to pass audio through its grace period, so we post a warning
-    // to the bus and keep processing.
-    if (!self->priv.licensingChecked)
-    {
-        self->priv.licensingChecked = true;
-        const std::string licErr = KrispGst::GlobalInit::lastLicensingError();
-        if (!licErr.empty())
-        {
-            GST_ELEMENT_WARNING(
-                self, RESOURCE, OPEN_READ, ("Krisp SDK licensing error: %s", licErr.c_str()), (nullptr));
-        }
-    }
-
-    GstMapInfo map;
-    if (!gst_buffer_map(buf, &map, GST_MAP_READWRITE))
-    {
-        GST_ELEMENT_ERROR(self, STREAM, FAILED, ("Failed to map buffer"), (nullptr));
-        return GST_FLOW_ERROR;
-    }
-
-    const int bps = self->priv.session->bytesPerSample();
-    self->priv.session->processInplace(map.data, map.size / bps, self->priv.nsLevel);
-
-    gst_buffer_unmap(buf, &map);
-
-    return GST_FLOW_OK;
+    return krispElementFilter("AR", bt, &GST_KRISP_ACCENT(bt)->priv, buf);
 }

@@ -1,3 +1,16 @@
+# ---------------------------------------------------------------------------
+# Unit tests — pure C++, no model files or license key required
+# ---------------------------------------------------------------------------
+unit_test_exe = executable('test_unit',
+  'test_unit.cpp',
+  include_directories: include_directories('../src'),
+  dependencies: [krisp_dep],
+)
+test('krisp-unit', unit_test_exe, timeout: 30)
+
+# ---------------------------------------------------------------------------
+# Integration test — requires model files and a real audio input
+# ---------------------------------------------------------------------------
 test_exe = executable('test_pipeline',
   'test_pipeline.cpp',
   dependencies: [gst_dep, gst_audio_dep],

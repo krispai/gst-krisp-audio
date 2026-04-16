@@ -5,12 +5,14 @@ sdk_cmd.py — Build and test helper for gst-krisp-audio
 Commands:
   build         Configure + compile (pass --sdk-dir to locate the Krisp SDK)
   clean_build   Same as build but wipes the Meson build directory first
+  unit_test     Run unit tests (no model or license key required)
   test          Run a single pipeline test (NC or AR)
 
 Examples:
   python sdk_cmd.py build --sdk-dir /path/to/krisp-sdk
   python sdk_cmd.py build --sdk-dir /path/to/krisp-sdk --nc --no-ar
   python sdk_cmd.py clean_build --sdk-dir /path/to/krisp-sdk
+  python sdk_cmd.py unit_test
   python sdk_cmd.py test --type test_nc \\
       --model /path/to/nc_model.kef \\
       --input /path/to/audio.wav \\
@@ -23,6 +25,7 @@ Examples:
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -35,10 +38,17 @@ BUILD_DIR       = PROJECT_ROOT / "build"
 MESON_BUILD_DIR = BUILD_DIR / "meson"
 PLUGIN_DIR      = MESON_BUILD_DIR / "src"
 TEST_BIN        = MESON_BUILD_DIR / "tests" / "test_pipeline"
+UNIT_TEST_BIN   = MESON_BUILD_DIR / "tests" / "test_unit"
 
-MESON_BIN  = Path("/opt/homebrew/bin/meson")
+# Locate meson via PATH; fall back to bare name so the shell can find it.
+_meson_which = shutil.which("meson")
+MESON_BIN = Path(_meson_which) if _meson_which else Path("meson")
 
-HOMEBREW_PKG = "/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig"
+# On Apple Silicon Homebrew installs pkg-config files under /opt/homebrew.
+# Prepend these paths only when running on macOS so the system pkg-config
+# can find GStreamer. On Linux/Windows the environment is already set up.
+_IS_MACOS = sys.platform == "darwin"
+HOMEBREW_PKG = "/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig" if _IS_MACOS else ""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -63,12 +73,18 @@ def meson_setup(sdk_dir: str, nc: bool, ar: bool, wipe: bool) -> None:
     ]
     if wipe:
         cmd.append("--wipe")
-    env = os.environ | {"PKG_CONFIG_PATH": HOMEBREW_PKG}
+    env = os.environ.copy()
+    if HOMEBREW_PKG:
+        existing = env.get("PKG_CONFIG_PATH", "")
+        env["PKG_CONFIG_PATH"] = f"{HOMEBREW_PKG}:{existing}" if existing else HOMEBREW_PKG
     run(cmd, cwd=PROJECT_ROOT, env=env)
 
 
 def meson_compile() -> None:
-    env = os.environ | {"PKG_CONFIG_PATH": HOMEBREW_PKG}
+    env = os.environ.copy()
+    if HOMEBREW_PKG:
+        existing = env.get("PKG_CONFIG_PATH", "")
+        env["PKG_CONFIG_PATH"] = f"{HOMEBREW_PKG}:{existing}" if existing else HOMEBREW_PKG
     run([str(MESON_BIN), "compile", "-C", str(MESON_BUILD_DIR)],
         cwd=PROJECT_ROOT, env=env)
 
@@ -81,6 +97,14 @@ def cmd_build(args: argparse.Namespace, wipe: bool) -> None:
     meson_setup(args.sdk_dir, nc=args.nc, ar=args.ar, wipe=wipe)
     meson_compile()
     print("\nBuild complete.")
+
+
+def cmd_unit_test(_args: argparse.Namespace) -> None:
+    if not UNIT_TEST_BIN.exists():
+        print(f"ERROR: unit test binary not found at {UNIT_TEST_BIN}\nRun 'build' first.",
+              file=sys.stderr)
+        sys.exit(1)
+    run([str(UNIT_TEST_BIN)], cwd=PROJECT_ROOT)
 
 
 def cmd_test(args: argparse.Namespace) -> None:
@@ -153,6 +177,8 @@ def main() -> None:
                               help="Wipe Meson build dir then build from scratch")
     build_args(p_clean)
 
+    sub.add_parser("unit_test", help="Run unit tests (no model or license key required)")
+
     p_test = sub.add_parser("test", help="Run a pipeline test")
     p_test.add_argument(
         "--type", choices=["test_nc", "test_ar"], required=True,
@@ -176,6 +202,8 @@ def main() -> None:
         cmd_build(args, wipe=False)
     elif args.command == "clean_build":
         cmd_build(args, wipe=True)
+    elif args.command == "unit_test":
+        cmd_unit_test(args)
     elif args.command == "test":
         cmd_test(args)
 
