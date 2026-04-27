@@ -108,10 +108,12 @@ gst-krisp-audio/
 ├── sdk_cmd.py                  # Build/test helper script
 ├── src/
 │   ├── krisp_session.hpp       # SDK session wrapper + GlobalInit lifecycle
+│   ├── gstkrisp_common.hpp/.cpp# Shared GObject property helpers
 │   ├── gstkrisp.cpp            # Plugin entry point (GST_PLUGIN_DEFINE)
 │   ├── gstkrispnc.hpp/.cpp     # krispnc element
 │   └── gstkrispaccent.hpp/.cpp # krispaccent element
 └── tests/
+    ├── test_unit.cpp           # Unit tests (no model or license key required)
     └── test_pipeline.cpp       # Integration test (EOS-based pipeline test)
 ```
 
@@ -133,6 +135,12 @@ python sdk_cmd.py build --sdk-dir /path/to/krisp-sdk --no-ar
 
 # Build only AR
 python sdk_cmd.py build --sdk-dir /path/to/krisp-sdk --no-nc
+```
+
+On Windows, `sdk_cmd.py` automatically activates the Visual Studio environment (via `--vsenv`) and locates GStreamer's pkg-config. If GStreamer is installed outside the default paths (`C:\gstreamer\` or `C:\Program Files\gstreamer\`), pass its root explicitly:
+
+```cmd
+python sdk_cmd.py build --sdk-dir C:\path\to\krisp-sdk --gst-dir C:\custom\gstreamer\1.0\msvc_x86_64
 ```
 
 The built plugin is written to `build/meson/src/`:
@@ -164,15 +172,20 @@ meson setup build/meson \
 meson compile -C build/meson
 ```
 
-**Windows** (run from an x64 Native Tools Command Prompt)
+**Windows**
 ```cmd
+REM Only needed when invoking meson directly; sdk_cmd.py sets this automatically
 set PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig
 meson setup build\meson ^
   -Dkrisp_sdk_dir=C:\path\to\krisp-sdk ^
   -Dnc=enabled ^
-  -Dar=enabled
+  -Dar=enabled ^
+  --vsenv ^
+  -Db_vscrt=mt
 meson compile -C build\meson
 ```
+
+`--vsenv` activates the Visual Studio x64 environment automatically (no need to open an x64 Native Tools Command Prompt first). `-Db_vscrt=mt` matches the static release CRT used by the Krisp SDK.
 
 ### Meson options
 
@@ -181,6 +194,7 @@ meson compile -C build\meson
 | `krisp_sdk_dir` | string | *(required)* | Absolute path to the Krisp SDK directory |
 | `nc` | feature | `enabled` | Build the `krispnc` element |
 | `ar` | feature | `auto` | Build `krispaccent` (auto = enabled if SDK header found) |
+| `gst_plugins_dir` | string | *(from pkg-config)* | Override the GStreamer plugin install directory |
 
 ---
 
@@ -199,14 +213,14 @@ automatically — no `GST_PLUGIN_PATH` needed.
 | macOS (Homebrew) | `/opt/homebrew/lib/gstreamer-1.0/` |
 | Linux (Debian/Ubuntu apt) | `/usr/lib/x86_64-linux-gnu/gstreamer-1.0/` |
 | Linux (Fedora/RHEL dnf) | `/usr/lib64/gstreamer-1.0/` |
-| Windows | `C:\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0\` |
+| Windows | `C:\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0\` or `C:\Program Files\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0\` |
 
 The exact path is queried at configure time from `pkg-config --variable=pluginsdir gstreamer-1.0`
 so it always matches the GStreamer installation that was used to build the plugin.
 
 To install to a custom location regardless of what pkg-config reports:
 ```sh
-meson setup build/meson --prefix /usr -Dkrisp_sdk_dir=...
+meson setup build/meson -Dkrisp_sdk_dir=... -Dgst_plugins_dir=/custom/path/gstreamer-1.0
 meson install -C build/meson
 ```
 
@@ -217,6 +231,9 @@ meson install -C build/meson
 ### Using `sdk_cmd.py` (recommended)
 
 ```sh
+# Unit tests — no model file or license key required
+python sdk_cmd.py unit_test
+
 # Test noise cancellation / voice isolation
 python sdk_cmd.py test \
   --type test_nc \
@@ -258,7 +275,7 @@ set KRISP_NC_MODEL=C:\path\to\nc_vi_model.kef
 meson test -C build\meson --verbose
 ```
 
-The test binary is `build/meson/tests/test_pipeline`. It exits with `0` on success.
+The test binary is `build/meson/tests/test_pipeline` (`.exe` on Windows). It exits with `0` on success.
 
 ---
 
@@ -417,12 +434,14 @@ libraries are needed beyond GStreamer. The `-framework` flags in `meson.build` a
 
 ### Windows
 
-- Build must be performed from an **x64 Native Tools Command Prompt** (provided by Visual Studio or
-  Build Tools for Visual Studio).
-- The GStreamer development installer provides pkg-config at
-  `C:\gstreamer\1.0\msvc_x86_64\bin\pkg-config.exe`. Make sure this is on `PATH` or set
-  `PKG_CONFIG_PATH` as shown in the build section above.
-- `sdk_cmd.py` uses forward slashes in paths internally; pass Windows paths with either `/` or `\`.
+- **`sdk_cmd.py` handles the MSVC environment automatically** via Meson's `--vsenv` flag — no need
+  to open an x64 Native Tools Command Prompt first. Visual Studio 2019 or 2022 (or Build Tools)
+  must be installed.
+- **`sdk_cmd.py` auto-detects GStreamer's pkg-config** by checking `GSTREAMER_1_0_ROOT_MSVC_X86_64`
+  env var, then `C:\gstreamer\1.0\msvc_x86_64\` and `C:\Program Files\gstreamer\1.0\msvc_x86_64\`.
+  For non-standard locations pass `--gst-dir`.
+- When invoking Meson directly, pass `--vsenv -Db_vscrt=mt` and set `PKG_CONFIG_PATH` as shown in
+  the build section above. `-Db_vscrt=mt` is required to match the `/MT` CRT used by the Krisp SDK.
 - The plugin is a `.dll`; `GST_PLUGIN_PATH` must point to the directory containing it.
 
 ---
