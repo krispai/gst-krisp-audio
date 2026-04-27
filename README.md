@@ -190,17 +190,23 @@ meson compile -C build\meson
 meson install -C build/meson
 ```
 
-This installs the plugin into `$(libdir)/gstreamer-1.0/`. GStreamer will discover it automatically.
+This installs the plugin into the directory GStreamer itself reports as its plugin
+search path (`pluginsdir` from its pkg-config file). GStreamer will discover it
+automatically — no `GST_PLUGIN_PATH` needed.
 
-| Platform | Default install path |
+| Platform | Typical install path |
 |---|---|
 | macOS (Homebrew) | `/opt/homebrew/lib/gstreamer-1.0/` |
-| Linux | `/usr/local/lib/gstreamer-1.0/` |
+| Linux (Debian/Ubuntu apt) | `/usr/lib/x86_64-linux-gnu/gstreamer-1.0/` |
+| Linux (Fedora/RHEL dnf) | `/usr/lib64/gstreamer-1.0/` |
 | Windows | `C:\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0\` |
 
-To install to a custom prefix:
+The exact path is queried at configure time from `pkg-config --variable=pluginsdir gstreamer-1.0`
+so it always matches the GStreamer installation that was used to build the plugin.
+
+To install to a custom location regardless of what pkg-config reports:
 ```sh
-meson setup build/meson --prefix /usr/local -Dkrisp_sdk_dir=...
+meson setup build/meson --prefix /usr -Dkrisp_sdk_dir=...
 meson install -C build/meson
 ```
 

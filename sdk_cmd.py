@@ -40,9 +40,21 @@ PLUGIN_DIR      = MESON_BUILD_DIR / "src"
 TEST_BIN        = MESON_BUILD_DIR / "tests" / "test_pipeline"
 UNIT_TEST_BIN   = MESON_BUILD_DIR / "tests" / "test_unit"
 
-# Locate meson via PATH; fall back to bare name so the shell can find it.
-_meson_which = shutil.which("meson")
-MESON_BIN = Path(_meson_which) if _meson_which else Path("meson")
+# Locate meson. Search order:
+#   1. PATH lookup (covers system packages and active virtualenvs)
+#   2. Sibling to the Python running this script (pip install --user / venv
+#      where ~/.local/bin may not be in PATH for subprocess invocations)
+#   3. Fall back to Python module invocation so pip-installed meson always works
+def _find_meson() -> list:
+    found = shutil.which("meson")
+    if found:
+        return [found]
+    sibling = Path(sys.executable).parent / "meson"
+    if sibling.exists():
+        return [str(sibling)]
+    return [sys.executable, "-m", "mesonbuild"]
+
+MESON_CMD = _find_meson()
 
 # On Apple Silicon Homebrew installs pkg-config files under /opt/homebrew.
 # Prepend these paths only when running on macOS so the system pkg-config
@@ -66,7 +78,7 @@ def meson_setup(sdk_dir: str, nc: bool, ar: bool, wipe: bool) -> None:
     feature_enabled  = "enabled"
     feature_disabled = "disabled"
     cmd = [
-        str(MESON_BIN), "setup", str(MESON_BUILD_DIR),
+        *MESON_CMD, "setup", str(MESON_BUILD_DIR),
         f"-Dkrisp_sdk_dir={sdk_dir}",
         f"-Dnc={feature_enabled if nc else feature_disabled}",
         f"-Dar={feature_enabled if ar else feature_disabled}",
@@ -85,7 +97,7 @@ def meson_compile() -> None:
     if HOMEBREW_PKG:
         existing = env.get("PKG_CONFIG_PATH", "")
         env["PKG_CONFIG_PATH"] = f"{HOMEBREW_PKG}:{existing}" if existing else HOMEBREW_PKG
-    run([str(MESON_BIN), "compile", "-C", str(MESON_BUILD_DIR)],
+    run([*MESON_CMD, "compile", "-C", str(MESON_BUILD_DIR)],
         cwd=PROJECT_ROOT, env=env)
 
 

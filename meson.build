@@ -15,6 +15,17 @@ gst_dep       = dependency('gstreamer-1.0',       version: '>=1.20', required: t
 gst_base_dep  = dependency('gstreamer-base-1.0',  version: '>=1.20', required: true)
 gst_audio_dep = dependency('gstreamer-audio-1.0', version: '>=1.20', required: true)
 
+# Install into the directory GStreamer itself reports as its plugins dir so that
+# the plugin is discovered automatically without setting GST_PLUGIN_PATH.
+# On macOS (Homebrew) this is /opt/homebrew/lib/gstreamer-1.0.
+# On Debian/Ubuntu it is /usr/lib/<arch>/gstreamer-1.0, NOT /usr/local/lib.
+# Fall back to $(libdir)/gstreamer-1.0 when the variable is absent (e.g. static
+# or CMake-based GStreamer builds that lack a pkg-config pluginsdir variable).
+gst_plugins_dir = gst_dep.get_variable(
+  pkgconfig: 'pluginsdir',
+  default_value: get_option('libdir') / 'gstreamer-1.0',
+)
+
 # ---------------------------------------------------------------------------
 # Krisp Audio SDK — located via -Dkrisp_sdk_dir=PATH
 # ---------------------------------------------------------------------------
