@@ -16,5 +16,5 @@ shared_library('gstkrisp',
   dependencies: [gst_dep, gst_base_dep, gst_audio_dep, krisp_dep],
   cpp_args: cpp_feature_args,
   install: true,
-  install_dir: get_option('libdir') / 'gstreamer-1.0',
+  install_dir: gst_plugins_dir,
 )

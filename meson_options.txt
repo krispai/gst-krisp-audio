@@ -12,3 +12,8 @@ option('ar',
     type: 'feature',
     value: 'auto',
     description: 'Build the krispaccent accent-reduction element (auto = enable if SDK header present)')
+
+option('gst_plugins_dir',
+    type: 'string',
+    value: '',
+    description: 'Override the GStreamer plugin install directory (default: queried from pkg-config pluginsdir)')

@@ -15,6 +15,13 @@ gst_dep       = dependency('gstreamer-1.0',       version: '>=1.20', required: t
 gst_base_dep  = dependency('gstreamer-base-1.0',  version: '>=1.20', required: true)
 gst_audio_dep = dependency('gstreamer-audio-1.0', version: '>=1.20', required: true)
 
+# Query GStreamer's own pluginsdir so the plugin is auto-discovered without GST_PLUGIN_PATH.
+_gst_plugins_dir_pkg = gst_dep.get_variable(
+  pkgconfig: 'pluginsdir',
+  default_value: get_option('libdir') / 'gstreamer-1.0',
+)
+gst_plugins_dir = get_option('gst_plugins_dir') != '' ? get_option('gst_plugins_dir') : _gst_plugins_dir_pkg
+
 # ---------------------------------------------------------------------------
 # Krisp Audio SDK — located via -Dkrisp_sdk_dir=PATH
 # ---------------------------------------------------------------------------
@@ -29,18 +36,27 @@ if krisp_sdk_dir == ''
 endif
 
 krisp_inc_flag  = '-I' + krisp_sdk_dir / 'include'
-krisp_static    = krisp_sdk_dir / 'lib' / 'static' / 'libkrisp-audio-sdk.a'
 krisp_ext_dir   = krisp_sdk_dir / 'lib' / 'static' / 'external'
+
+# Static library name differs by toolchain: MSVC uses krisp-audio-sdk.lib, Unix uses libkrisp-audio-sdk.a
+_win = host_machine.system() == 'windows'
+_lib_suffix = _win ? '.lib' : '.a'
+_lib_prefix = _win ? '' : 'lib'
+krisp_static = krisp_sdk_dir / 'lib' / 'static' / (_lib_prefix + 'krisp-audio-sdk' + _lib_suffix)
 
 if not import('fs').exists(krisp_static)
   error('Krisp SDK static library not found: ' + krisp_static)
 endif
 
-# Collect all external static libraries bundled with the SDK
-krisp_ext_libs = run_command(
-  'find', krisp_ext_dir, '-name', '*.a',
+# Collect all external static libraries bundled with the SDK (cross-platform glob via Python)
+_py = find_program('python3', 'python', required: true)
+_ext_out = run_command(
+  _py, '-c',
+  'import glob, sys; [print(x) for x in glob.glob(sys.argv[1])]',
+  krisp_ext_dir / ('*' + _lib_suffix),
   check: true
-).stdout().strip().split('\n')
+).stdout().strip()
+krisp_ext_libs = _ext_out != '' ? _ext_out.split('\n') : []
 
 krisp_macos_frameworks = host_machine.system() == 'darwin' ? [
   '-framework', 'Foundation',          # NSLog (ONNX Runtime) + CF* re-export (libcurl)
@@ -49,9 +65,12 @@ krisp_macos_frameworks = host_machine.system() == 'darwin' ? [
   '-framework', 'Security',            # libcurl certificate handling
 ] : []
 
+# libcurl (bundled in the SDK) requires Winsock and Windows certificate APIs on Windows.
+krisp_win_libs = _win ? ['ws2_32.lib', 'crypt32.lib'] : []
+
 krisp_dep = declare_dependency(
-  compile_args: [krisp_inc_flag],
-  link_args: [krisp_static] + krisp_ext_libs + krisp_macos_frameworks,
+  compile_args: [krisp_inc_flag, '-DKRISP_AUDIO_STATIC'],
+  link_args: [krisp_static] + krisp_ext_libs + krisp_macos_frameworks + krisp_win_libs,
 )
 
 # ---------------------------------------------------------------------------
